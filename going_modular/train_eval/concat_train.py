@@ -11,6 +11,11 @@ from ..utils.roc_auc import compute_auc
 from ..utils.metrics import ConcatProgressMeter
 from ..utils.MultiMetricEarlyStopping import MultiMetricEarlyStopping
 from ..utils.ModelCheckPoint import ModelCheckpoint
+import os
+
+# Đặt seed toàn cục
+seed = 42
+torch.manual_seed(seed)
 
 def fit(
     conf: dict,
@@ -22,115 +27,156 @@ def fit(
     optimizer: Optimizer,
     scheduler,
     early_stopping: MultiMetricEarlyStopping,
-    model_checkpoint: ModelCheckpoint
+    model_checkpoint: ModelCheckpoint,
+    existing_manager=None # <--- Tích hợp Manager
 ):
-    log_dir = os.path.join(conf['checkpoint_dir'], conf['type'], 'logs')
+    # 1. SETUP LOGGING
+    if existing_manager:
+        log_dir = existing_manager.log_dir
+        manager = existing_manager
+    else:
+        log_dir = os.path.join(conf['checkpoint_dir'], conf['type'], 'logs')
+        class Dummy:
+            def log_text(self, m): print(m)
+            def log_metrics(self, e, m): pass
+        manager = Dummy()
+
     writer = SummaryWriter(log_dir=log_dir)
     device = conf['device']
-    
-    for epoch in range(start_epoch, conf['epochs']):
-        print(f"\n--- Epoch {epoch+1}/{conf['epochs']} ---")
-        
-        # 1. TRAIN
-        train_metrics = train_epoch(train_dataloader, model, criterion, optimizer, device)
-        
-        # 2. TEST
-        test_metrics = test_epoch(test_dataloader, model, criterion, device)
-        
-        # 3. AUC (PHẦN QUAN TRỌNG NHẤT: BẮT LỖI CHI TIẾT)
-        test_id_auc = 0.0
-        try:
-            # Gọi hàm tính AUC
-            test_auc = compute_auc(test_dataloader, model, device)
-            
-            # Lấy giá trị ID Cosine
-            if isinstance(test_auc, dict) and 'id_cosine' in test_auc:
-                test_id_auc = test_auc['id_cosine']
-            else:
-                print(f" Cảnh báo: compute_auc không trả về dict chứa 'id_cosine'. Kết quả nhận được: {test_auc}")
-                
-        except Exception as e:
-            print(f"\n LỖI NGHIÊM TRỌNG KHI TÍNH AUC TẠI EPOCH {epoch+1}:")
-            print(f" Lý do: {e}")
-            print(" Chi tiết lỗi (Traceback):")
-            traceback.print_exc() # In ra dòng code gây lỗi
-            test_id_auc = 0.0
 
-        # 4. LOGGING
-        writer.add_scalar('Loss/train', train_metrics['total'], epoch+1)
-        writer.add_scalar('AUC/id_cosine', test_id_auc, epoch+1)
-        
-        # Hiển thị bảng đẹp
-        # Gộp metric train và test vào để hiển thị
-        display_train = train_metrics.copy()
-        display_test = test_metrics.copy()
-        
-        # Thêm AUC vào dict để hiển thị ra bảng
-        display_train['auc_id_cosine'] = 0.0 # Train không tính AUC để tiết kiệm time
-        display_test['auc_id_cosine'] = test_id_auc
-        
+    manager.log_text(f"BAT DAU CONCAT TRAINING: {conf['note']}")
+
+    for epoch in range(start_epoch, conf['epochs']):
+        manager.log_text(f"\n--- Epoch {epoch+1}/{conf['epochs']} ---")
+
+        # 1. TRAIN
+        (
+            train_loss, train_loss_id,
+            train_loss_gender, train_loss_emotion,
+            train_loss_pose, train_loss_facial_hair,
+            train_loss_spectacles,
+        ) = train_epoch(train_dataloader, model, criterion, optimizer, device)
+
+        # 2. TEST
+        (
+            test_loss_gender, test_loss_emotion,
+            test_loss_pose, test_loss_facial_hair,
+            test_loss_spectacles,
+        ) = test_epoch(test_dataloader, model, criterion, device)
+
+        # 3. AUC
+        train_auc = compute_auc(train_dataloader, model, device)
+        test_auc = compute_auc(test_dataloader, model, device)
+
+        # Mapping biến AUC
+        train_gender_auc = train_auc.get('gender', 0)
+        train_spectacles_auc = train_auc.get('spectacles', 0)
+        train_facial_hair_auc = train_auc.get('facial_hair', 0)
+        train_pose_auc = train_auc.get('pose', 0)
+        train_emotion_auc = train_auc.get('emotion', 0)
+        train_id_cosine_auc = train_auc.get('id_cosine', 0)
+        train_id_euclidean_auc = train_auc.get('id_euclidean', 0)
+
+        test_gender_auc = test_auc.get('gender', 0)
+        test_spectacles_auc = test_auc.get('spectacles', 0)
+        test_facial_hair_auc = test_auc.get('facial_hair', 0)
+        test_pose_auc = test_auc.get('pose', 0)
+        test_emotion_auc = test_auc.get('emotion', 0)
+        test_id_cosine_auc = test_auc.get('id_cosine', 0)
+        test_id_euclidean_auc = test_auc.get('id_euclidean', 0)
+
+        # LOG TENSORBOARD
+        writer.add_scalar('Loss/train', train_loss, epoch+1)
+        writer.add_scalars('AUC/id_cosine', {'train': train_id_cosine_auc, 'test': test_id_cosine_auc}, epoch+1)
+
+        # --- 4. METRICS DICT (FULL) ---
+        train_metrics = {
+            "loss": train_loss,
+            "loss_id": train_loss_id,
+            "loss_gender": train_loss_gender,
+            "loss_emotion": train_loss_emotion,
+            "loss_pose": train_loss_pose,
+            "loss_facial_hair": train_loss_facial_hair,
+            "loss_spectacles": train_loss_spectacles,
+            "auc_gender": train_gender_auc,
+            "auc_spectacles": train_spectacles_auc,
+            "auc_facial_hair": train_facial_hair_auc,
+            "auc_pose": train_pose_auc,
+            "auc_emotion": train_emotion_auc,
+            "auc_id_cosine": train_id_cosine_auc,
+            "auc_id_euclidean": train_id_euclidean_auc,
+        }
+
+        test_metrics = {
+            "loss_gender": test_loss_gender,
+            "loss_emotion": test_loss_emotion,
+            "loss_pose": test_loss_pose,
+            "loss_facial_hair": test_loss_facial_hair,
+            "loss_spectacles": test_loss_spectacles,
+            "auc_gender": test_gender_auc,
+            "auc_spectacles": test_spectacles_auc,
+            "auc_facial_hair": test_facial_hair_auc,
+            "auc_pose": test_pose_auc,
+            "auc_emotion": test_emotion_auc,
+            "auc_id_cosine": test_id_cosine_auc,
+            "auc_id_euclidean": test_id_euclidean_auc,
+        }
+
         process = ConcatProgressMeter(
-            train_metrics=display_train,
-            test_metrics=display_test,
-            prefix=f"Epoch {epoch + 1}:"
+            train_metrics=train_metrics,
+            test_metrics=test_metrics,
+            prefix=f"Ep {epoch + 1}:"
         )
         process.display()
 
-        # 5. Checkpoint & Early Stopping
-        model_checkpoint(model, optimizer, epoch + 1)
-        early_stopping([-test_id_auc], model, epoch + 1) # Dấu trừ vì ta muốn Maximize AUC
-        
-        if scheduler:
-            scheduler.step(epoch)
-        
+        # GHI LOG
+        log_full = {**train_metrics, **test_metrics}
+        manager.log_metrics(epoch+1, log_full)
+
+        # CHECKPOINT
+        model_checkpoint(model, optimizer, epoch + 1, test_metrics, scheduler)
+
+        scheduler.step(epoch)
+
     writer.close()
+    manager.log_text("CONCAT TRAINING HOAN TAT.")
 
+# --- GIỮ NGUYÊN LOGIC TRAIN/TEST EPOCH NHƯ CŨ ---
 def train_epoch(train_dataloader, model, criterion, optimizer, device):
-    model.to(device)
-    model.train()
+    model.to(device); model.train()
+    train_loss = 0
+    t_id=0; t_gen=0; t_emo=0; t_pose=0; t_hair=0; t_spec=0
 
-    # Khởi tạo dict để lưu tất cả các loại loss
-    losses = {k: 0.0 for k in ['total', 'id', 'gender', 'emotion', 'pose', 'facial_hair', 'spectacles']}
-    
-    for x_albedo, x_normal, y in tqdm(train_dataloader, desc="Training"):
-        x_albedo, x_normal, y = x_albedo.to(device), x_normal.to(device), y.to(device)
-
+    for X, y in train_dataloader:
+        X, y = X.to(device), y.to(device)
         optimizer.zero_grad()
-        output_fusion, output_aux = model(x_albedo, x_normal)
-        total_loss, loss_dict = criterion(output_fusion, output_aux, y)
+        logits = model(X)
+
+        (total_loss, l_id, l_gen, l_emo, l_pose, l_hair, l_spec) = criterion(logits, y)
 
         total_loss.backward()
         optimizer.step()
 
-        # Cộng dồn loss (An toàn hơn với .get)
-        losses['total'] += total_loss.item()
-        for k in losses:
-            if k != 'total' and k in loss_dict:
-                val = loss_dict[k]
-                losses[k] += val.item() if torch.is_tensor(val) else val
+        train_loss += total_loss.item()
+        t_id += l_id.item(); t_gen += l_gen.item()
+        t_emo += l_emo.item(); t_pose += l_pose.item()
+        t_hair += l_hair.item(); t_spec += l_spec.item()
 
-    # Tính trung bình
     n = len(train_dataloader)
-    return {k: v / n for k, v in losses.items()}
+    return (train_loss/n, t_id/n, t_gen/n, t_emo/n, t_pose/n, t_hair/n, t_spec/n)
 
 def test_epoch(test_dataloader, model, criterion, device):
-    model.to(device)
-    model.eval()
-    
-    losses = {k: 0.0 for k in ['total', 'id', 'gender', 'emotion', 'pose', 'facial_hair', 'spectacles']}
+    model.to(device); model.eval()
+    t_gen=0; t_emo=0; t_pose=0; t_hair=0; t_spec=0
 
     with torch.no_grad():
-        for x_albedo, x_normal, y in test_dataloader:
-            x_albedo, x_normal, y = x_albedo.to(device), x_normal.to(device), y.to(device)
+        for X, y in test_dataloader:
+            X, y = X.to(device), y.to(device)
+            logits = model(X)
+            (_, _, l_gen, l_emo, l_pose, l_hair, l_spec) = criterion(logits, y)
 
-            output_fusion, output_aux = model(x_albedo, x_normal)
-            total_loss, loss_dict = criterion(output_fusion, output_aux, y)
-
-            losses['total'] += total_loss.item()
-            for k in losses:
-                if k != 'total' and k in loss_dict:
-                    val = loss_dict[k]
-                    losses[k] += val.item() if torch.is_tensor(val) else val
+            t_gen += l_gen.item(); t_emo += l_emo.item()
+            t_pose += l_pose.item(); t_hair += l_hair.item(); t_spec += l_spec.item()
 
     n = len(test_dataloader)
-    return {k: v / n for k, v in losses.items()}
+    return (t_gen/n, t_emo/n, t_pose/n, t_hair/n, t_spec/n)

@@ -10,12 +10,15 @@ class ConcatMultiTaskLoss(torch.nn.Module):
         # ID Loss
         self.id_head = MagLinear(512, conf['num_classes'])
         self.id_loss = WeightClassMagLoss(metadata_path)
-        
-        # Aux Loss
+      
         self.gender_loss = FocalLoss(alpha_weights={0:0.916, 1:0.084}, gamma_weights={0:2, 1:0}, num_classes=2)
+      
         self.spectacles_loss = FocalLoss(alpha_weights={0: 0.28, 1: 0.72}, gamma_weights={0:0, 1:1}, num_classes=2)
+
         self.facial_hair_loss = FocalLoss(alpha_weights={0:0.3, 1:0.7}, gamma_weights={0:0, 1:1}, num_classes=2)
+    
         self.pose_loss = FocalLoss(alpha_weights={0: 0.0263, 1: 0.9737}, gamma_weights={0:0, 1:2.5}, num_classes=2)
+     
         self.emotion_loss = FocalLoss(alpha_weights={0:0.232, 1:0.768}, gamma_weights={0:0, 1:1}, num_classes=2)
         
         self.conf = conf

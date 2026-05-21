@@ -4,6 +4,7 @@ import numpy as np
 import os
 import pandas as pd
 import cv2
+from typing import List, Tuple
 
 class PhotometricDataset(Dataset):
     def __init__(self, csv_file, root_dir, transform=None, type_mode='albedo'):

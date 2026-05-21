@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(ls -la \"g:\\\\\\\\DATN\\\\\\\\FR_Photometric_Stereo\\\\\\\\going_modular\\\\\\\\\")"
+    ]
+  }
+}
